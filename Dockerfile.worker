@@ -1,0 +1,15 @@
+# Dockerfile.worker — image Worker (python worker.py) dan Scheduler (python scheduler.py)
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY worker.py scheduler.py ./
+COPY app/ ./app/
+COPY scripts/ ./scripts/
+COPY schemas/ ./schemas/
+
+# Default: worker. Scheduler memakai image yang sama dengan command override.
+CMD ["python", "worker.py"]

@@ -1,0 +1,13 @@
+fastapi
+uvicorn[standard]
+python-multipart
+psycopg2-binary
+redis
+google-generativeai
+python-dotenv
+cryptography
+PyJWT
+requests
+google-auth
+gspread
+google-cloud-storage

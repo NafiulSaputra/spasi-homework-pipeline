@@ -1,0 +1,17 @@
+# Salin jadi terraform.tfvars untuk menjalankan Terraform dari laptop.
+# JANGAN commit terraform.tfvars (sudah ada di .gitignore).
+# Di CI, semua nilai ini diisi dari GitHub Secrets (TF_VAR_*).
+
+project_id             = "spasi-project-id-kamu"
+region                 = "asia-southeast2"
+environment            = "staging"
+image_tag              = "latest"
+google_oauth_client_id = ""
+spreadsheet_id         = ""
+
+db_password          = "ganti-dengan-password-kuat"
+gemini_api_key       = "ganti-dengan-gemini-api-key"
+whatsapp_api_key     = "ganti-dengan-whatsapp-api-key"
+phone_encryption_key = "ganti-dengan-string-acak-panjang"
+nis_hash_pepper      = "ganti-dengan-string-acak-panjang"
+jwt_secret           = "ganti-dengan-string-acak-panjang"

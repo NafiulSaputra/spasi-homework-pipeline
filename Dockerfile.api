@@ -1,0 +1,17 @@
+# Dockerfile.api — image service API (FastAPI)
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY api.py .
+COPY app/ ./app/
+COPY scripts/ ./scripts/
+COPY schemas/ ./schemas/
+
+EXPOSE 8080
+
+# Cloud Run mengirim traffic ke $PORT (default 8080)
+CMD ["sh", "-c", "uvicorn api:app --host 0.0.0.0 --port ${PORT:-8080}"]

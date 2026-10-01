@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "skor": { "type": "number", "minimum": 0, "maximum": 100 },
+    "catatan_evaluasi": { "type": "string", "maxLength": 500 },
+    "tingkat_keyakinan": { "type": "number", "minimum": 0, "maximum": 1 },
+    "teks_terbaca": { "type": "boolean" }
+  },
+  "required": ["skor", "catatan_evaluasi", "tingkat_keyakinan", "teks_terbaca"],
+  "additionalProperties": false
+}

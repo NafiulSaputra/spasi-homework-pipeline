@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SPASI — Portal Siswa</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1d2433; --muted:#6b7385; --line:#e3e6ec;
+          --accent:#2457d6; --ok:#1d8a4e; --warn:#b26a00; --bad:#c0392b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); }
+  main { max-width:520px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; font-size:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:15px; }
+  button { margin-top:14px; width:100%; padding:11px; border:0; border-radius:8px; background:var(--accent);
+           color:#fff; font-size:15px; font-weight:600; cursor:pointer; }
+  button.secondary { background:transparent; color:var(--accent); border:1px solid var(--line); }
+  button:disabled { opacity:.6; cursor:wait; }
+  .tabs { display:flex; gap:8px; margin-bottom:16px; }
+  .tabs button { margin:0; }
+  .msg { font-size:14px; margin-top:12px; padding:10px 12px; border-radius:8px; display:none; }
+  .msg.ok { display:block; background:#e8f6ee; color:var(--ok); }
+  .msg.err { display:block; background:#fdecea; color:var(--bad); }
+  .msg.info { display:block; background:#eef2fd; color:var(--accent); }
+  .task h3 { margin:0 0 4px; font-size:16px; }
+  .task .meta { font-size:13px; color:var(--muted); margin-bottom:8px; }
+  .hidden { display:none; }
+  .row { display:flex; justify-content:space-between; align-items:center; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>SPASI</h1>
+  <p class="sub">Portal tugas siswa</p>
+
+  <!-- ================= AUTH ================= -->
+  <section id="auth">
+    <div class="tabs">
+      <button id="tabDaftar" onclick="showTab('daftar')">Daftar</button>
+      <button id="tabMasuk" class="secondary" onclick="showTab('masuk')">Masuk</button>
+    </div>
+
+    <div class="card" id="formDaftar">
+      <label>Nama lengkap</label><input id="regNama" autocomplete="name">
+      <label>No. absen</label><input id="regAbsen" inputmode="numeric">
+      <label>NIS / NISN</label><input id="regNisn" inputmode="numeric">
+      <label>Kode aktivasi dari guru</label><input id="regKode" inputmode="numeric" maxlength="6">
+      <button onclick="daftarStep1(this)">Lanjut</button>
+      <div class="msg" id="msgDaftar"></div>
+    </div>
+
+    <div class="card hidden" id="formMasuk">
+      <label>NIS / NISN</label><input id="loginNisn" inputmode="numeric">
+      <button onclick="masukRequestOtp(this)">Kirim OTP</button>
+      <div class="msg" id="msgMasuk"></div>
+    </div>
+
+    <div class="card hidden" id="formOtp">
+      <p style="margin:0">Masukkan kode OTP yang dikirim ke WhatsApp terdaftar.</p>
+      <label>Kode OTP</label><input id="otpInput" inputmode="numeric" maxlength="6">
+      <button onclick="verifyOtp(this)">Verifikasi</button>
+      <div class="msg" id="msgOtp"></div>
+    </div>
+  </section>
+
+  <!-- ================= TUGAS ================= -->
+  <section id="tugas" class="hidden">
+    <div class="row" style="margin-bottom:12px">
+      <strong>Tugas aktif</strong>
+      <a href="#" onclick="logout()">Keluar</a>
+    </div>
+    <div id="daftarTugas"></div>
+  </section>
+</main>
+
+<script>
+const API_URL = new URLSearchParams(location.search).get("api") || "http://localhost:8080";
+const MAX_FILE = 2 * 1024 * 1024;
+let otpFlow = null;   // { mode: 'register' | 'login', nisnHash }
+
+// ID perangkat acak per browser (untuk rate limit & audit log, bukan identitas siswa)
+function deviceId() {
+  let id = localStorage.getItem("spasi_device");
+  if (!id) { id = crypto.randomUUID(); localStorage.setItem("spasi_device", id); }
+  return id;
+}
+
+function msg(id, text, type) {
+  const el = document.getElementById(id);
+  el.className = "msg " + type;
+  el.textContent = text;
+}
+
+function showTab(tab) {
+  document.getElementById("formDaftar").classList.toggle("hidden", tab !== "daftar");
+  document.getElementById("formMasuk").classList.toggle("hidden", tab !== "masuk");
+  document.getElementById("formOtp").classList.add("hidden");
+  document.getElementById("tabDaftar").className = tab === "daftar" ? "" : "secondary";
+  document.getElementById("tabMasuk").className = tab === "masuk" ? "" : "secondary";
+}
+
+async function post(path, fields, token) {
+  const fd = new FormData();
+  Object.entries(fields).forEach(([k, v]) => fd.append(k, v));
+  const res = await fetch(API_URL + path, {
+    method: "POST", body: fd,
+    headers: token ? { Authorization: "Bearer " + token } : {},
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+  return data;
+}
+
+function showOtp(data, msgId) {
+  document.getElementById("formOtp").classList.remove("hidden");
+  // otp_debug HANYA dikirim server dalam mode demo (SPASI_MOCK_WHATSAPP=1)
+  if (data.otp_debug) msg("msgOtp", "Mode demo — OTP: " + data.otp_debug, "info");
+  msg(msgId, "OTP terkirim.", "ok");
+}
+
+async function daftarStep1(btn) {
+  btn.disabled = true;
+  try {
+    const step1 = await post("/auth/register/step1", {
+      nama: regNama.value, no_absen: regAbsen.value, nisn: regNisn.value,
+      kode_aktivasi: regKode.value, ip_device: deviceId(),
+    });
+    const otp = await post("/auth/register/request-otp", { nisn_hash: step1.nisn_hash, ip_device: deviceId() });
+    otpFlow = { mode: "register", nisnHash: step1.nisn_hash };
+    showOtp(otp, "msgDaftar");
+  } catch (e) { msg("msgDaftar", e.message, "err"); }
+  btn.disabled = false;
+}
+
+async function masukRequestOtp(btn) {
+  btn.disabled = true;
+  try {
+    const data = await post("/auth/login/request-otp", { nisn: loginNisn.value, ip_device: deviceId() });
+    otpFlow = { mode: "login", nisnHash: data.nisn_hash };
+    showOtp(data, "msgMasuk");
+  } catch (e) { msg("msgMasuk", e.message, "err"); }
+  btn.disabled = false;
+}
+
+async function verifyOtp(btn) {
+  btn.disabled = true;
+  try {
+    const path = otpFlow.mode === "register" ? "/auth/register/verify-otp" : "/auth/login/verify-otp";
+    const data = await post(path, { nisn_hash: otpFlow.nisnHash, otp: otpInput.value, ip_device: deviceId() });
+    localStorage.setItem("spasi_token", data.token);
+    masukKeTugas();
+  } catch (e) { msg("msgOtp", e.message, "err"); }
+  btn.disabled = false;
+}
+
+function logout() {
+  localStorage.removeItem("spasi_token");
+  location.reload();
+}
+
+async function masukKeTugas() {
+  document.getElementById("auth").classList.add("hidden");
+  document.getElementById("tugas").classList.remove("hidden");
+  const res = await fetch(API_URL + "/siswa/daftar-tugas", {
+    headers: { Authorization: "Bearer " + localStorage.getItem("spasi_token") },
+  });
+  if (res.status === 401) return logout();
+  const { data } = await res.json();
+  const wrap = document.getElementById("daftarTugas");
+  wrap.innerHTML = data.length ? "" : '<div class="card">Belum ada tugas.</div>';
+  data.forEach(t => {
+    const el = document.createElement("div");
+    el.className = "card task";
+    el.innerHTML = `
+      <h3></h3>
+      <div class="meta">Tenggat: <span class="dl"></span> · <a target="_blank" rel="noopener">Unduh soal</a></div>
+      <input type="file" accept="image/*,.doc,.docx,.pdf">
+      <button>Kirim tugas</button>
+      <div class="msg"></div>`;
+    el.querySelector("h3").textContent = t.judul;
+    el.querySelector(".dl").textContent = t.deadline;
+    el.querySelector("a").href = t.link_gdrive;
+    const btn = el.querySelector("button");
+    btn.onclick = () => kirimTugas(t.task_id, el.querySelector("input"), btn, el.querySelector(".msg"));
+    wrap.appendChild(el);
+  });
+}
+
+function setMsg(el, text, type) { el.className = "msg " + type; el.textContent = text; }
+
+function getPosition() {
+  return new Promise((resolve, reject) =>
+    navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 15000 }));
+}
+
+async function kirimTugas(taskId, fileInput, btn, msgEl) {
+  const file = fileInput.files[0];
+  if (!file) return setMsg(msgEl, "Pilih file tugas dulu.", "err");
+  // GIGO preventer: tolak sebelum upload supaya biaya AI tidak terbuang
+  if (file.size > MAX_FILE) return setMsg(msgEl, "Ukuran file maksimal 2MB.", "err");
+
+  btn.disabled = true;
+  setMsg(msgEl, "Mengambil lokasi...", "info");
+
+  let pos;
+  try { pos = await getPosition(); }
+  catch { btn.disabled = false; return setMsg(msgEl, "Izin lokasi diperlukan untuk mengirim tugas.", "err"); }
+
+  // Idempotency key: dibuat SEKALI per klik, dipakai ulang di setiap retry
+  // jaringan, supaya server tidak mencatat submission ganda.
+  const attemptId = crypto.randomUUID();
+  const eventTime = new Date().toISOString();
+  const fields = {
+    task_id: taskId, lat: pos.coords.latitude, lon: pos.coords.longitude,
+    event_time: eventTime, submission_attempt_id: attemptId,
+    // Browser web tidak bisa mendeteksi fake GPS. Aplikasi Android (APK)
+    // wajib mengisi ini dari flag mock location OS.
+    mock_location_detected: false,
+  };
+
+  for (let percobaan = 1; percobaan <= 3; percobaan++) {
+    try {
+      const fd = new FormData();
+      Object.entries(fields).forEach(([k, v]) => fd.append(k, v));
+      fd.append("foto", file);
+      const res = await fetch(API_URL + "/submit-tugas", {
+        method: "POST", body: fd,
+        headers: { Authorization: "Bearer " + localStorage.getItem("spasi_token") },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { btn.disabled = false; return setMsg(msgEl, data.detail || "Gagal mengirim.", "err"); }
+      btn.disabled = false;
+      return setMsg(msgEl, "Terkirim. Tugas sedang dinilai — nilai muncul di rekap guru.", "ok");
+    } catch {
+      setMsg(msgEl, `Koneksi gagal, mencoba lagi (${percobaan}/3)...`, "info");
+      await new Promise(r => setTimeout(r, 1500 * percobaan));
+    }
+  }
+  btn.disabled = false;
+  setMsg(msgEl, "Koneksi gagal. Coba kirim lagi saat sinyal stabil.", "err");
+}
+
+if (localStorage.getItem("spasi_token")) masukKeTugas();
+</script>
+</body>
+</html>

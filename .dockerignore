@@ -1,0 +1,11 @@
+.venv/
+.git/
+.env
+__pycache__/
+*.pyc
+tests/
+infra/
+frontend/
+.github/
+*.md
+local_uploads/

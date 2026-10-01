@@ -1,0 +1,17 @@
+# Secrets — JANGAN PERNAH commit
+.env
+*.json.key
+infra/terraform.tfvars
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/.terraform/
+infra/.terraform.lock.hcl
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# File upload lokal (dev)
+local_uploads/
+upload_*

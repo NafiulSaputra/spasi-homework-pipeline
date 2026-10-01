@@ -1,0 +1,88 @@
+# docker-compose.yml — seluruh sistem SPASI untuk dev/demo lokal.
+#
+#   docker compose up --build
+#
+# Mode demo aktif: Gemini & WhatsApp di-mock (gratis, tanpa API key, OTP
+# tampil di layar). Untuk mencoba Gemini sungguhan, set SPASI_MOCK_AI=0
+# dan isi GEMINI_API_KEY di file .env.
+
+x-app-env: &app-env
+  DB_HOST: db
+  DB_PORT: "5432"
+  DB_NAME: spasi_db
+  DB_USER: spasi_app
+  DB_PASS: spasi_local_pw
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  NIS_HASH_PEPPER: ${NIS_HASH_PEPPER:-pepper-lokal-ganti-ini}
+  PHONE_ENCRYPTION_KEY: ${PHONE_ENCRYPTION_KEY:-kunci-lokal-ganti-ini}
+  JWT_SECRET: ${JWT_SECRET:-jwt-lokal-ganti-ini}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  SPASI_MOCK_AI: ${SPASI_MOCK_AI:-1}
+  SPASI_MOCK_WHATSAPP: ${SPASI_MOCK_WHATSAPP:-1}
+  SYNC_INTERVAL_SECONDS: "60"
+  SUMMARY_INTERVAL_SECONDS: "60"
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: spasi_app
+      POSTGRES_PASSWORD: spasi_local_pw
+      POSTGRES_DB: spasi_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spasi_app -d spasi_db"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 20
+
+  api:
+    build: { context: ., dockerfile: Dockerfile.api }
+    environment: *app-env
+    ports:
+      - "8080:8080"
+    volumes:
+      - uploads:/app/local_uploads
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  worker:
+    build: { context: ., dockerfile: Dockerfile.worker }
+    environment: *app-env
+    volumes:
+      - uploads:/app/local_uploads   # worker membaca file yang disimpan API
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  scheduler:
+    build: { context: ., dockerfile: Dockerfile.worker }
+    command: ["python", "scheduler.py"]
+    environment: *app-env
+    depends_on:
+      db: { condition: service_healthy }
+
+  frontend:
+    image: nginx:alpine
+    ports:
+      - "3000:80"
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+
+volumes:
+  pgdata:
+  uploads:
