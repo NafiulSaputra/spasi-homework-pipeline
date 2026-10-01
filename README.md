@@ -1,123 +1,123 @@
 # SPASI — Student Task & Location Tracking Pipeline
 
-Pipeline data untuk tugas rumah (PR) siswa: siswa mengunggah foto jawaban, sistem memvalidasi lokasi dan tenggat waktu, AI (Gemini) menilai berdasarkan rubrik guru, lalu nilai disinkronkan ke Google Sheets yang menjadi "command center" guru.
+A data pipeline for student homework: students upload a photo of their answers, the system validates their location and the submission deadline, an AI model (Gemini) grades the work against the teacher's rubric, and the results are synchronised to Google Sheets, which serves as the teacher's "command center".
 
-Dirancang untuk target 10.000 siswa, dengan fokus pada integritas data (idempotency, dead letter queue), privasi (identitas di-hash, nomor HP dienkripsi, koordinat GPS mentah tidak pernah disimpan), dan infrastruktur yang sepenuhnya didefinisikan sebagai kode.
+Designed for a target of 10,000 students, with an emphasis on data integrity (idempotency, a dead letter queue), privacy (identities are hashed, phone numbers are encrypted, and raw GPS coordinates are never stored), and infrastructure that is fully defined as code.
 
-## Arsitektur
+## Architecture
 
 ```mermaid
 flowchart TD
-    G[Guru - Google Sheets<br/>Tab Master Soal] -->|Forward ETL| DB[(PostgreSQL)]
-    S[Siswa - Web/APK] -->|Auth 3-layer: data + kode aktivasi + OTP| API[FastAPI - Cloud Run]
-    S -->|Foto + GPS + submission_attempt_id| API
-    API -->|File, path unik| ST[(Object Storage)]
-    API -->|Hanya path internal| Q[[Redis Queue]]
+    G[Teacher - Google Sheets<br/>Master Soal tab] -->|Forward ETL| DB[(PostgreSQL)]
+    S[Student - Web/APK] -->|3-layer auth: data + activation code + OTP| API[FastAPI - Cloud Run]
+    S -->|Photo + GPS + submission_attempt_id| API
+    API -->|File, unique path| ST[(Object Storage)]
+    API -->|Internal path only| Q[[Redis Queue]]
     Q --> W[Stateless Worker]
-    W --> W1[1. Geofence Haversine<br/>di area sekolah = pelanggaran PR]
-    W1 --> W2[2. Privasi: GPS mentah dibuang]
-    W2 --> W3[3. Deadline: is_late + penalti 20%]
-    W3 --> W4[4. AI Grading Gemini<br/>JSON schema + retry]
-    W4 -->|Gagal permanen| DLQ[[Dead Letter Queue]]
+    W --> W1[1. Haversine geofence<br/>inside school area = homework violation]
+    W1 --> W2[2. Privacy: raw GPS discarded]
+    W2 --> W3[3. Deadline: is_late + 20% penalty]
+    W3 --> W4[4. Gemini AI grading<br/>JSON schema + retry]
+    W4 -->|Permanent failure| DLQ[[Dead Letter Queue]]
     W4 -->|Idempotent upsert| DB
-    DB -->|Reverse ETL per kelas| GS[Google Sheets - Nilai Masuk<br/>ai_score terpisah dari final_score]
-    DB -->|Agregasi| R[Rekap semester untuk rapor]
+    DB -->|Reverse ETL per class| GS[Google Sheets - Nilai Masuk<br/>ai_score kept separate from final_score]
+    DB -->|Aggregation| R[Semester summary for report cards]
 ```
 
-## Keputusan desain utama
+## Key Design Decisions
 
-| Masalah | Keputusan |
+| Problem | Decision |
 |---|---|
-| Siswa menekan "Kirim" dua kali / jaringan retry | `submission_attempt_id` (UUID dari klien) sebagai primary key; worker mengecek duplikat sebelum memanggil AI |
-| Revisi tugas sebelum deadline | Setiap revisi baris baru (histori utuh), hanya satu yang `is_latest_submission = TRUE` |
-| Antrean menumpuk menjelang deadline | Worker membaca file via service account, bukan Signed URL yang bisa kedaluwarsa |
-| Respons AI rusak/halusinasi | Validasi skema JSON + batas `tingkat_keyakinan`, retry dengan backoff, lalu karantina ke DLQ |
-| Nilai manual guru tertimpa sinkronisasi | Kolom `ai_score` (otomatis) dipisah dari `final_score` (guru); sync tidak pernah menyentuh `final_score` |
-| Google Sheets lambat di ribuan baris | Satu spreadsheet per kelas (`class_spreadsheet_mapping`) + tab rekap ringkas per semester |
-| NIS sekolah hanya 4 digit (kebijakan sekolah) | Hash + pepper rahasia; pertahanan utama di kode aktivasi fisik + OTP + rate limit |
-| Nomor HP harus bisa dipakai kirim OTP | Dienkripsi (reversible), bukan di-hash; boleh sama untuk kakak-adik |
-| Zona waktu browser (UTC) vs deadline (WIB) | Semua waktu dinormalkan ke zona waktu sekolah sebelum dibandingkan |
+| A student taps "Submit" twice, or the network retries the request | `submission_attempt_id` (a client-generated UUID) serves as the primary key; the worker checks for duplicates before calling the AI |
+| Assignment revisions before the deadline | Every revision is stored as a new row (full history preserved), and only one row has `is_latest_submission = TRUE` |
+| Queue backlog as the deadline approaches | The worker reads files through a service account rather than via Signed URLs, which can expire |
+| Malformed or hallucinated AI responses | JSON schema validation and a `tingkat_keyakinan` (confidence level) threshold, retries with backoff, then quarantine in the DLQ |
+| Teachers' manual grades overwritten by a sync | The `ai_score` column (automatic) is kept separate from `final_score` (teacher-owned); the sync never touches `final_score` |
+| Google Sheets slowing down with thousands of rows | One spreadsheet per class (`class_spreadsheet_mapping`) plus a compact per-semester summary tab |
+| School student IDs (NIS) are only 4 digits long (school policy) | Hash plus a secret pepper; the primary line of defence is the physical activation code, the OTP, and rate limiting |
+| Phone numbers must remain usable for sending OTPs | Encrypted (reversible) rather than hashed; siblings may share the same number |
+| Browser time zone (UTC) vs. deadline time zone (WIB) | All timestamps are normalised to the school's time zone before comparison |
 
-## Menjalankan lokal (mode demo)
+## Running Locally (Demo Mode)
 
-Prasyarat: Docker Desktop dan Python 3.10+.
+Prerequisites: Docker Desktop and Python 3.10+.
 
 ```bash
 docker compose up --build -d     # Postgres, Redis, API, worker, scheduler, frontend
 pip install requests
-python scripts/demo_local.py     # skenario end-to-end otomatis
+python scripts/demo_local.py     # automated end-to-end scenario
 ```
 
-Mode demo memakai AI dan WhatsApp tiruan (gratis, tanpa API key, OTP ditampilkan di layar). Frontend siswa tersedia di http://localhost:3000.
+Demo mode uses mock AI and WhatsApp services (free, no API keys required; the OTP is displayed on screen). The student frontend is available at http://localhost:3000.
 
-Untuk mencoba Gemini sungguhan, buat file `.env` berisi `SPASI_MOCK_AI=0` dan `GEMINI_API_KEY=...`, lalu `docker compose up -d` lagi.
+To try the real Gemini, create a `.env` file containing `SPASI_MOCK_AI=0` and `GEMINI_API_KEY=...`, then run `docker compose up -d` again.
 
-Reset total data lokal: `docker compose down -v`.
+To wipe all local data: `docker compose down -v`.
 
 ## Testing
 
 ```bash
-python -m unittest discover -s tests -v                       # unit test, tanpa dependensi luar
-SPASI_INTEGRATION=1 python -m unittest discover -s tests/integration -v   # butuh Postgres + Redis
+python -m unittest discover -s tests -v                       # unit tests, no external dependencies
+SPASI_INTEGRATION=1 python -m unittest discover -s tests/integration -v   # requires Postgres + Redis
 ```
 
-| Suite | Isi | Jalan di |
+| Suite | Coverage | Runs on |
 |---|---|---|
-| `test_geofence.py` | Haversine, batas radius 150 m vs 151 m, mode PR vs presensi | lokal & CI |
-| `test_security.py` | hash + pepper, enkripsi nomor HP bolak-balik, OTP | lokal & CI |
-| `test_worker_pipeline.py` | `worker.py` asli: geofence, privasi GPS, deadline, zona waktu, revisi, idempotency, retry + DLQ, rekap rapor | lokal & CI |
-| `test_import_roster.py` | hash/enkripsi roster, nomor HP bersama, import ulang tidak menerbitkan kode palsu | lokal & CI |
-| `integration/test_api_e2e.py` | Alur penuh lewat HTTP dengan Postgres + Redis asli: daftar 3-layer, rate limit, tugas, submit, worker, laporan | CI (service container) |
+| `test_geofence.py` | Haversine, 150 m vs. 151 m radius boundary, homework vs. attendance mode | local & CI |
+| `test_security.py` | Hash + pepper, phone number encrypt/decrypt round trip, OTP | local & CI |
+| `test_worker_pipeline.py` | The actual `worker.py`: geofence, GPS privacy, deadline, time zones, revisions, idempotency, retry + DLQ, report card summary | local & CI |
+| `test_import_roster.py` | Roster hashing/encryption, shared phone numbers, re-imports never issue spurious activation codes | local & CI |
+| `integration/test_api_e2e.py` | Full flow over HTTP against real Postgres + Redis: 3-layer registration, rate limiting, assignments, submission, worker, reporting | CI (service containers) |
 
-## Deploy ke GCP
+## Deploying to GCP
 
-### Persiapan sekali saja
+### One-Time Setup
 
-1. Buat bucket untuk Terraform state:
+1. Create a bucket for the Terraform state:
    ```bash
    bash scripts/bootstrap_tf_state.sh <PROJECT_ID> spasi-tfstate-<PROJECT_ID>
    ```
-2. Service account untuk GitHub Actions (isi `GCP_SA_KEY`) membutuhkan peran: Editor, Project IAM Admin, Secret Manager Admin, Cloud Run Admin, Service Account User, dan Storage Admin pada bucket state.
-3. Isi GitHub Secrets (Settings → Secrets and variables → Actions). Nama harus persis sama:
+2. The service account for GitHub Actions (supplied as `GCP_SA_KEY`) requires the following roles: Editor, Project IAM Admin, Secret Manager Admin, Cloud Run Admin, Service Account User, and Storage Admin on the state bucket.
+3. Add the GitHub Secrets (Settings → Secrets and variables → Actions). The names must match exactly:
 
-| Secret | Wajib | Isi |
+| Secret | Required | Value |
 |---|---|---|
-| `GCP_PROJECT_ID` | ya | ID project GCP |
-| `GCP_REGION` | ya | mis. `asia-southeast2` |
-| `GCP_SA_KEY` | ya | JSON key service account deploy |
-| `TF_STATE_BUCKET` | ya | nama bucket dari langkah 1 |
-| `DB_PASSWORD` | ya | password database |
-| `GEMINI_API_KEY` | ya | API key Gemini |
-| `WHATSAPP_API_KEY` | ya | API key provider WhatsApp |
-| `PHONE_ENCRYPTION_KEY` | ya | string acak panjang |
-| `NIS_HASH_PEPPER` | ya | string acak panjang |
-| `JWT_SECRET` | ya | string acak panjang |
-| `GOOGLE_OAUTH_CLIENT_ID` | untuk login guru | OAuth Client ID |
-| `SPREADSHEET_ID` | untuk sync Sheets | ID spreadsheet Master Soal |
+| `GCP_PROJECT_ID` | yes | GCP project ID |
+| `GCP_REGION` | yes | e.g. `asia-southeast2` |
+| `GCP_SA_KEY` | yes | Deployment service account JSON key |
+| `TF_STATE_BUCKET` | yes | Bucket name from step 1 |
+| `DB_PASSWORD` | yes | Database password |
+| `GEMINI_API_KEY` | yes | Gemini API key |
+| `WHATSAPP_API_KEY` | yes | WhatsApp provider API key |
+| `PHONE_ENCRYPTION_KEY` | yes | Long random string |
+| `NIS_HASH_PEPPER` | yes | Long random string |
+| `JWT_SECRET` | yes | Long random string |
+| `GOOGLE_OAUTH_CLIENT_ID` | for teacher login | OAuth Client ID |
+| `SPREADSHEET_ID` | for Sheets sync | ID of the Master Soal spreadsheet |
 
-> Penting: `PHONE_ENCRYPTION_KEY` dan `NIS_HASH_PEPPER` tidak boleh diganti setelah roster diimport. Mengganti keduanya membuat nomor HP tidak bisa didekripsi dan NIS tidak cocok lagi.
+> **Important:** `PHONE_ENCRYPTION_KEY` and `NIS_HASH_PEPPER` must not be changed once a roster has been imported. Changing either one makes phone numbers impossible to decrypt and causes NIS values to stop matching.
 
-### Alur CI/CD
+### CI/CD Flow
 
-- **Pull request**: unit test, test integrasi (Postgres + Redis asli), `terraform validate`, dan `terraform plan`.
-- **Merge ke `main`**: Artifact Registry dibuat dulu, image di-build dengan tag commit SHA, seluruh infra di-apply, worker VM di-restart, lalu smoke test ke `/health`.
+- **Pull request**: unit tests, integration tests (against real Postgres + Redis), `terraform validate`, and `terraform plan`.
+- **Merge to `main`**: the Artifact Registry is created first, the image is built and tagged with the commit SHA, the full infrastructure is applied, the worker VM is restarted, and a smoke test then hits `/health`.
 
-### Setelah deploy pertama
+### After the First Deployment
 
-1. Jalankan `terraform output app_service_account_email`, lalu share spreadsheet guru ke email itu sebagai Editor.
-2. Spreadsheet membutuhkan tab `Master Soal` (kolom: ID Soal, Judul, Link GDrive Soal, Tenggat Waktu, Rubrik Penilaian/Prompt AI, Semester) dan tab `Nilai Masuk` (kolom: Nama Siswa, ai_score, status_lokasi, final_score).
-3. Import roster siswa ke database staging dengan `scripts/import_roster.py`, lalu bagikan kode aktivasi yang dicetak ke siswa secara fisik.
-4. Buka frontend dengan `index.html?api=<api_url>`.
+1. Run `terraform output app_service_account_email`, then share the teacher's spreadsheet with that email address as an Editor.
+2. The spreadsheet needs a `Master Soal` ("Master Questions") tab with the columns: ID Soal (Question ID), Judul (Title), Link GDrive Soal (Question Drive Link), Tenggat Waktu (Deadline), Rubrik Penilaian/Prompt AI (Grading Rubric/AI Prompt), Semester; and a `Nilai Masuk` ("Incoming Grades") tab with the columns: Nama Siswa (Student Name), ai_score, status_lokasi (location status), final_score.
+3. Import the student roster into the staging database with `scripts/import_roster.py`, then hand out the printed activation codes to students in person.
+4. Open the frontend with `index.html?api=<api_url>`.
 
-## Infrastruktur (Terraform)
+## Infrastructure (Terraform)
 
-Cloud Run (API) · Cloud SQL PostgreSQL 15 dengan backup harian dan koneksi terenkripsi · Memorystore Redis + Serverless VPC Connector · Cloud Storage tanpa akses publik · Secret Manager · Artifact Registry · Compute Engine (worker + scheduler + Cloud SQL Auth Proxy) · remote state di GCS.
+Cloud Run (API) · Cloud SQL PostgreSQL 15 with daily backups and encrypted connections · Memorystore Redis + Serverless VPC Connector · Cloud Storage with no public access · Secret Manager · Artifact Registry · Compute Engine (worker + scheduler + Cloud SQL Auth Proxy) · remote state in GCS.
 
-## Keterbatasan yang diketahui
+## Known Limitations
 
-- Browser web tidak bisa mendeteksi fake GPS. Deteksi mock location hanya efektif di aplikasi Android native yang mengirim `mock_location_detected` dari flag OS; perangkat yang di-root tetap bisa menyembunyikannya.
-- Geofence memakai radius tetap; akurasi GPS ponsel (sekitar 5–20 m) bisa membuat pengiriman tepat di tepi radius salah klasifikasi sesekali.
-- Worker berjalan di satu VM. Cukup untuk tahap awal; untuk skala penuh, pertimbangkan instance group atau migrasi ke Pub/Sub + Cloud Run.
-- Login guru via Google belum membatasi domain email sekolah (`TODO` di `api.py`), dan CORS masih terbuka untuk semua origin.
-- Alert DLQ baru berupa log; belum terhubung ke email/Slack.
-- Biaya OTP WhatsApp naik seiring jumlah siswa (trade-off yang disengaja demi integritas akun).
+- Web browsers cannot detect fake GPS. Mock-location detection is only effective in a native Android app that sends `mock_location_detected` from the OS flag; rooted devices can still conceal it.
+- The geofence uses a fixed radius; phone GPS accuracy (roughly 5–20 m) can occasionally misclassify submissions made right at the edge of the radius.
+- The worker runs on a single VM. This is sufficient for the early stage; at full scale, consider an instance group or a migration to Pub/Sub + Cloud Run.
+- Teacher login via Google does not yet restrict sign-ins to the school's email domain (a `TODO` in `api.py`), and CORS is still open to all origins.
+- DLQ alerts are currently log-only; they are not yet connected to email or Slack.
+- WhatsApp OTP costs grow with the number of students (a deliberate trade-off in favour of account integrity).
